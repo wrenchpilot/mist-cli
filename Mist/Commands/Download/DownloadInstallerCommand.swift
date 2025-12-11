@@ -62,12 +62,29 @@ struct DownloadInstallerCommand: ParsableCommand {
         try verifyFreeSpace(installer, options: options)
         try Downloader().download(installer, options: options)
 
-        if !installer.bigSurOrNewer || options.outputType != [.package] {
-            try InstallerCreator.create(installer, options: options)
+        // Use do/catch to ensure cleanup happens even on error
+        var operationError: Error?
+        do {
+            if !installer.bigSurOrNewer || options.outputType != [.package] {
+                try InstallerCreator.create(installer, options: options)
+            }
+
+            try Generator.generate(installer, options: options)
+        } catch {
+            operationError = error
+            // Clean up stale mounts on error path
+            !options.quiet ? PrettyPrint.print("ERROR: Operation failed, cleaning up mounts...", noAnsi: options.noAnsi) : Mist.noop()
+            Generator.cleanupStaleMounts(for: installer, quiet: options.quiet, noAnsi: options.noAnsi)
         }
 
-        try Generator.generate(installer, options: options)
+        // Teardown runs regardless (but may throw if cleanup failed)
         try teardown(installer, options: options)
+        
+        // Re-throw the original error after cleanup
+        if let error = operationError {
+            throw error
+        }
+        
         try export(installer, options: options)
     }
 
@@ -430,10 +447,22 @@ struct DownloadInstallerCommand: ParsableCommand {
 
         !options.quiet ? PrettyPrint.printHeader("TEARDOWN", noAnsi: options.noAnsi) : Mist.noop()
 
+        // Clean up ALL mount points using robust unmount with retries and diskutil fallback
         if !installer.bigSurOrNewer || options.outputType != [.package] {
-            !options.quiet ? PrettyPrint.print("Unmounting disk image at mount point '\(installer.temporaryDiskImageMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
-            let arguments: [String] = ["hdiutil", "detach", installer.temporaryDiskImageMountPointURL.path, "-force"]
-            _ = try Shell.execute(arguments)
+            !options.quiet ? PrettyPrint.print("Cleaning up disk image mounts...", noAnsi: options.noAnsi) : Mist.noop()
+            
+            // Unmount the main DMG mount point
+            if FileManager.default.fileExists(atPath: installer.temporaryDiskImageMountPointURL.path) {
+                !options.quiet ? PrettyPrint.print("Unmounting disk image at mount point '\(installer.temporaryDiskImageMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
+                Generator.unmountDiskImage(at: installer.temporaryDiskImageMountPointURL.path, quiet: options.quiet, noAnsi: options.noAnsi)
+            }
+            
+            // Also unmount the ISO mount point if it exists (from generateISO)
+            if FileManager.default.fileExists(atPath: installer.temporaryISOMountPointURL.path) {
+                !options.quiet ? PrettyPrint.print("Unmounting ISO disk image at mount point '\(installer.temporaryISOMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
+                Generator.unmountDiskImage(at: installer.temporaryISOMountPointURL.path, quiet: options.quiet, noAnsi: options.noAnsi)
+            }
+            
             processing = true
         }
 

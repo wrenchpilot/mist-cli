@@ -11,6 +11,107 @@ import Foundation
 
 /// Helper Struct used to generate macOS Firmwares, Installers, Disk Images and Installer Packages.
 enum Generator {
+    /// Checks if a path is actually a mount point (has something mounted there).
+    ///
+    /// - Parameter path: The path to check.
+    /// - Returns: True if something is mounted at this path, false if it's just a directory.
+    private static func isMountPoint(_ path: String) -> Bool {
+        // Use mount command to check if something is actually mounted at this path
+        // The output format is: "/dev/diskXsY on /Volumes/VolumeName (type, options)"
+        guard let output = try? Shell.execute(["mount"]) else {
+            return false
+        }
+        // Check if any line contains " on <path> " - the spaces ensure exact match
+        return output.contains(" on \(path) ")
+    }
+
+    /// Robustly unmounts a disk image with multiple fallback strategies.
+    ///
+    /// This function tries multiple approaches to unmount a disk image:
+    /// 1. hdiutil detach with retries
+    /// 2. diskutil unmount force
+    /// 3. Raw umount -f (nuclear option for zombie mounts)
+    ///
+    /// - Parameters:
+    ///   - mountPoint: The path to the mount point to unmount.
+    ///   - quiet: Whether to suppress output.
+    ///   - noAnsi: Whether to disable ANSI formatting.
+    ///
+    /// - Returns: True if unmounted successfully, false otherwise.
+    @discardableResult
+    static func unmountDiskImage(at mountPoint: String, quiet: Bool = false, noAnsi: Bool = false) -> Bool {
+        // First, check if something is actually mounted there (not just directory exists)
+        guard isMountPoint(mountPoint) else {
+            return true  // Not mounted, nothing to do
+        }
+
+        // Strategy 1: Try hdiutil detach first with retries
+        for attempt in 1...3 {
+            do {
+                _ = try Shell.execute(["hdiutil", "detach", mountPoint, "-force"])
+                return true
+            } catch {
+                if attempt < 3 {
+                    !quiet ? PrettyPrint.print("Disk busy, retrying unmount in 2 seconds (attempt \(attempt)/3)...", noAnsi: noAnsi) : Mist.noop()
+                    Thread.sleep(forTimeInterval: 2.0)
+                }
+            }
+        }
+
+        // Strategy 2: Fallback to diskutil unmount force
+        !quiet ? PrettyPrint.print("hdiutil failed, trying diskutil...", noAnsi: noAnsi) : Mist.noop()
+        do {
+            _ = try Shell.execute(["diskutil", "unmount", "force", mountPoint])
+            Thread.sleep(forTimeInterval: 1.0)
+            // Try to eject if the unmount succeeded
+            _ = try? Shell.execute(["diskutil", "eject", mountPoint])
+            
+            // Check if it's gone
+            if !isMountPoint(mountPoint) {
+                return true
+            }
+        } catch {
+            // diskutil failed, continue to nuclear option
+        }
+
+        // Strategy 3: Nuclear option - raw umount -f
+        // This handles zombie mounts that hdiutil and diskutil can't deal with
+        !quiet ? PrettyPrint.print("diskutil failed, trying raw umount...", noAnsi: noAnsi) : Mist.noop()
+        do {
+            _ = try Shell.execute(["umount", "-f", mountPoint])
+            Thread.sleep(forTimeInterval: 1.0)
+            
+            if !isMountPoint(mountPoint) {
+                return true
+            }
+        } catch {
+            // Even umount failed
+        }
+
+        !quiet ? PrettyPrint.print("WARNING: Failed to unmount '\(mountPoint)' - you may need to clean up manually or reboot", noAnsi: noAnsi) : Mist.noop()
+        return false
+    }
+
+    /// Cleans up any stale mounts for an installer before starting operations.
+    ///
+    /// - Parameters:
+    ///   - installer: The installer whose mounts should be cleaned up.
+    ///   - quiet: Whether to suppress output.
+    ///   - noAnsi: Whether to disable ANSI formatting.
+    static func cleanupStaleMounts(for installer: Installer, quiet: Bool = false, noAnsi: Bool = false) {
+        // Clean up the main DMG mount point (only if actually mounted)
+        if isMountPoint(installer.temporaryDiskImageMountPointURL.path) {
+            !quiet ? PrettyPrint.print("Cleaning up stale mount at '\(installer.temporaryDiskImageMountPointURL.path)'...", noAnsi: noAnsi) : Mist.noop()
+            unmountDiskImage(at: installer.temporaryDiskImageMountPointURL.path, quiet: quiet, noAnsi: noAnsi)
+        }
+
+        // Clean up the ISO mount point (only if actually mounted)
+        if isMountPoint(installer.temporaryISOMountPointURL.path) {
+            !quiet ? PrettyPrint.print("Cleaning up stale mount at '\(installer.temporaryISOMountPointURL.path)'...", noAnsi: noAnsi) : Mist.noop()
+            unmountDiskImage(at: installer.temporaryISOMountPointURL.path, quiet: quiet, noAnsi: noAnsi)
+        }
+    }
+
     /// Generates a macOS Firmware.
     ///
     /// - Parameters:
@@ -214,6 +315,12 @@ enum Generator {
             !options.quiet ? PrettyPrint.print("Creating disk image '\(dmgURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
             arguments = ["hdiutil", "create", "-fs", "JHFS+", "-layout", "SPUD", "-size", "\(installer.isoSize)g", dmgURL.path]
             _ = try Shell.execute(arguments)
+
+            // Clean up any existing mount at this mount point before mounting (only if actually mounted)
+            if isMountPoint(installer.temporaryISOMountPointURL.path) {
+                !options.quiet ? PrettyPrint.print("Unmounting existing disk image at mount point '\(installer.temporaryISOMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
+                unmountDiskImage(at: installer.temporaryISOMountPointURL.path, quiet: options.quiet, noAnsi: options.noAnsi)
+            }
 
             !options.quiet ? PrettyPrint.print("Mounting disk image at mount point '\(installer.temporaryISOMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
             arguments = ["hdiutil", "attach", dmgURL.path, "-noverify", "-nobrowse", "-mountpoint", installer.temporaryISOMountPointURL.path]
