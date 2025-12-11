@@ -57,8 +57,7 @@ enum InstallerCreator {
             _ = try Shell.execute(arguments, environment: variables)
 
             !options.quiet ? PrettyPrint.print("Unmounting Installer disk image at mount point '\(legacyDiskImageMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
-            let arguments: [String] = ["hdiutil", "detach", legacyDiskImageMountPointURL.path, "-force"]
-            _ = try Shell.execute(arguments)
+            Generator.unmountDiskImage(at: legacyDiskImageMountPointURL.path, quiet: options.quiet, noAnsi: options.noAnsi)
         } else {
             !options.quiet ? PrettyPrint.print("Creating new installer '\(installer.temporaryInstallerURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
 

@@ -99,17 +99,11 @@ enum Generator {
     ///   - quiet: Whether to suppress output.
     ///   - noAnsi: Whether to disable ANSI formatting.
     static func cleanupStaleMounts(for installer: Installer, quiet: Bool = false, noAnsi: Bool = false) {
-        // Clean up the main DMG mount point (only if actually mounted)
-        if isMountPoint(installer.temporaryDiskImageMountPointURL.path) {
-            !quiet ? PrettyPrint.print("Cleaning up stale mount at '\(installer.temporaryDiskImageMountPointURL.path)'...", noAnsi: noAnsi) : Mist.noop()
-            unmountDiskImage(at: installer.temporaryDiskImageMountPointURL.path, quiet: quiet, noAnsi: noAnsi)
-        }
+        // Clean up the main DMG mount point (unmountDiskImage checks if actually mounted)
+        unmountDiskImage(at: installer.temporaryDiskImageMountPointURL.path, quiet: quiet, noAnsi: noAnsi)
 
-        // Clean up the ISO mount point (only if actually mounted)
-        if isMountPoint(installer.temporaryISOMountPointURL.path) {
-            !quiet ? PrettyPrint.print("Cleaning up stale mount at '\(installer.temporaryISOMountPointURL.path)'...", noAnsi: noAnsi) : Mist.noop()
-            unmountDiskImage(at: installer.temporaryISOMountPointURL.path, quiet: quiet, noAnsi: noAnsi)
-        }
+        // Clean up the ISO mount point (unmountDiskImage checks if actually mounted)
+        unmountDiskImage(at: installer.temporaryISOMountPointURL.path, quiet: quiet, noAnsi: noAnsi)
     }
 
     /// Generates a macOS Firmware.
@@ -316,11 +310,8 @@ enum Generator {
             arguments = ["hdiutil", "create", "-fs", "JHFS+", "-layout", "SPUD", "-size", "\(installer.isoSize)g", dmgURL.path]
             _ = try Shell.execute(arguments)
 
-            // Clean up any existing mount at this mount point before mounting (only if actually mounted)
-            if isMountPoint(installer.temporaryISOMountPointURL.path) {
-                !options.quiet ? PrettyPrint.print("Unmounting existing disk image at mount point '\(installer.temporaryISOMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
-                unmountDiskImage(at: installer.temporaryISOMountPointURL.path, quiet: options.quiet, noAnsi: options.noAnsi)
-            }
+            // Clean up any existing mount at this mount point before mounting
+            unmountDiskImage(at: installer.temporaryISOMountPointURL.path, quiet: options.quiet, noAnsi: options.noAnsi)
 
             !options.quiet ? PrettyPrint.print("Mounting disk image at mount point '\(installer.temporaryISOMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
             arguments = ["hdiutil", "attach", dmgURL.path, "-noverify", "-nobrowse", "-mountpoint", installer.temporaryISOMountPointURL.path]
@@ -367,8 +358,7 @@ enum Generator {
             }
 
             !options.quiet ? PrettyPrint.print("Unmounting disk image at mount point '\(installer.temporaryISOMountPointURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
-            arguments = ["hdiutil", "detach", installer.temporaryISOMountPointURL.path, "-force"]
-            _ = try Shell.execute(arguments)
+            unmountDiskImage(at: installer.temporaryISOMountPointURL.path, quiet: options.quiet, noAnsi: options.noAnsi)
 
             !options.quiet ? PrettyPrint.print("Converting disk image '\(cdrURL.path)'...", noAnsi: options.noAnsi) : Mist.noop()
             arguments = ["hdiutil", "convert", dmgURL.path, "-format", "UDTO", "-o", cdrURL.path]
